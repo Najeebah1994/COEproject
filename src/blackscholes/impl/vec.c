@@ -26,13 +26,6 @@
 /* Alternative Implementation */
 #define inv_sqrt_2xPI 0.39894228040143270286
 
-__m256 char_to_float(char* c) {
-    __m256 result;
-    for (int i = 0; i < 8; ++i) {
-        result[i] = (tolower(c[i]) == 'p')? 1 : 0;
-    }
-    return result;
-}
 
 __m256 CNDF_v (__m256 InputX) 
 {
@@ -138,16 +131,39 @@ void* impl_vector(void* args)
     char * otype      = a->otype     ;
     float* output     = a->output    ;
 
-    for (i = 0; i < num_stocks; i+=8) {
-        __m256 sptprice_vec = _mm256_loadu_ps(sptprice + i);
-        __m256 strike_vec = _mm256_loadu_ps(strike + i);
-        __m256 rate_vec = _mm256_loadu_ps(rate + i);
-        __m256 volatility_vec = _mm256_loadu_ps(volatility + i);
-        __m256 otime_vec = _mm256_loadu_ps(otime + i);
-        __m256 otype_vec = char_to_float(otype + i);
-        __m256 result = blackScholes_v(sptprice_vec, strike_vec, rate_vec, volatility_vec, otime_vec, otype_vec);
+    __m256i vm = _mm256_set1_epi32(0x80000000);
+    const int max_vlen = 32 / sizeof(float);
 
-        _mm256_storeu_ps(output + i,result);
-    
+    for (register size_t hw_vlen, i = 0; i < num_stocks; i += hw_vlen) {
+      register int rem = num_stocks - i;
+      hw_vlen = rem < max_vlen ? rem : max_vlen;        /* num of elems      */
+      if (hw_vlen < max_vlen)
+      {
+      unsigned int m[max_vlen];
+      for (size_t j = 0; j < max_vlen; j++)
+        m[j] = (j < hw_vlen) ? 0x80000000 : 0x00000000;
+        vm = _mm256_setr_epi32(m[0], m[1], m[2], m[3],
+                             m[4], m[5], m[6], m[7]);
+      }
+
+        __m256 sptprice_vec = _mm256_maskload_ps(sptprice,vm);
+        __m256 strike_vec = _mm256_maskload_ps(strike,vm);
+        __m256 rate_vec = _mm256_maskload_ps(rate,vm);
+        __m256 volatility_vec = _mm256_maskload_ps(volatility,vm);
+        __m256 otime_vec = _mm256_maskload_ps(otime,vm);
+        __m256i otype_vec= _mm256_cvtepu8_epi32(_mm_loadu_si128((const __m128i*) (otype)));
+        otype_vec= _mm256_cmpeq_epi32(otype_vec, _mm256_set1_epi32('P'));
+        __m256 otype_vec1= _mm256_castsi256_ps(otype_vec);
+        __m256 result = blackScholes_v(sptprice_vec, strike_vec, rate_vec, volatility_vec, otime_vec, otype_vec1);
+
+        _mm256_maskstore_ps(output,vm,result);
+
+        sptprice +=hw_vlen;
+        strike +=hw_vlen;
+        rate +=hw_vlen; 
+        volatility +=hw_vlen;
+        otime +=hw_vlen;
+        otype +=hw_vlen;
+        output +=hw_vlen;    
 }
 }
